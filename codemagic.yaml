@@ -137,7 +137,13 @@ workflows:
           # this workflow failed to parse. Keep embedded scripts to one-liners.
           if ! grep -q 'platform="iOS"' export_presets.cfg 2>/dev/null; then
             BUNDLE_ID=$(python3 -c 'import json,os,pathlib,re; p=pathlib.Path(".exekite/launch_manifest.json"); b=""; d=json.loads(p.read_text()) if p.is_file() else {}; b=(d.get("info") or {}).get("bundle_identifier") or ""; s=re.sub(r"[^a-z0-9]","",(os.environ.get("EXEKITE_PROJECT_ID") or "game").lower()) or "game"; print(b or ("com.exekite."+s))')
-            IDX=$(grep -c '^\[preset\.' export_presets.cfg 2>/dev/null || echo 0)
+            # Count ONLY section headers `[preset.N]`. The naive
+            # `grep -c '^\[preset\.'` also matches `[preset.N.options]`, which
+            # doubled the count and wrote `[preset.2]` into a file whose only
+            # preset was `[preset.0]`. Godot parses presets CONTIGUOUSLY and
+            # stopped at the gap: "Invalid export preset name: iOS. The
+            # following presets were detected: Web".
+            IDX=$(grep -cE '^\[preset\.[0-9]+\]$' export_presets.cfg 2>/dev/null || echo 0)
             printf '\n[preset.%s]\n\n' "$IDX" >> export_presets.cfg
             printf 'name="iOS"\nplatform="iOS"\nrunnable=true\nadvanced_options=false\ndedicated_server=false\ncustom_features=""\n' >> export_presets.cfg
             printf 'export_filter="all_resources"\ninclude_filter=""\nexclude_filter=""\nexport_path="build/ios/game.ipa"\n' >> export_presets.cfg

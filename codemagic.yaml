@@ -85,9 +85,14 @@ workflows:
             mkdir -p "$TPL"
             curl -fL --retry 5 --retry-all-errors -o /tmp/templates.tpz \
               "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-            unzip -q /tmp/templates.tpz -d /tmp/tpl
-            cp /tmp/tpl/templates/ios* "$TPL"/ 2>/dev/null || cp -R /tmp/tpl/templates/. "$TPL"/
+            # SELECTIVE extract. The .tpz is ~1.25 GB and unpacks to several
+            # more; extracting all of it was killed with SIGKILL (exit 137) on
+            # a real runner. `-j` flattens and takes ONLY the iOS members.
+            unzip -j -q /tmp/templates.tpz 'templates/ios*' -d "$TPL"
+            rm -f /tmp/templates.tpz
+            ls -la "$TPL" | head
           fi
+          df -h / | tail -1
           "$BIN" --version
 
       - name: Ensure the iOS export preset

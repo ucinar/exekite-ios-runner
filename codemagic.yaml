@@ -76,8 +76,18 @@ workflows:
             curl -fL --retry 5 --retry-all-errors -o /tmp/godot.zip \
               "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
             unzip -q /tmp/godot.zip -d /tmp/godot
-            cp -R /tmp/godot/Godot.app/Contents/MacOS/Godot "$BIN"
+            # The zip layout has changed across releases — find the binary
+            # rather than assuming Godot.app/Contents/MacOS/Godot.
+            SRC=$(find /tmp/godot -type f -perm -u+x -name 'Godot*' | head -1)
+            [ -n "$SRC" ] || { echo "godot binary not found in the zip:" >&2; find /tmp/godot -maxdepth 3 >&2; exit 1; }
+            cp "$SRC" "$BIN"
             chmod +x "$BIN"
+            # macOS QUARANTINE. A binary downloaded with curl carries
+            # com.apple.quarantine, and Gatekeeper SIGKILLs it on exec — which
+            # surfaces as a bare "exited with status code 137" with no other
+            # diagnostic. This line is the whole reason the first runs died.
+            xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
+            rm -rf /tmp/godot /tmp/godot.zip
           fi
           # Only the iOS templates — the full .tpz is ~1.25 GB and the rest of
           # it is dead weight in the cache.

@@ -98,62 +98,23 @@ workflows:
           # in-sandbox preset"), exactly as it does for Android — so the preset
           # is written HERE, by the executor that owns the platform. Appended
           # only when absent, mirroring run-job.sh's Android block.
+          #
+          # NOTE: no multi-line heredocs in this file. A heredoc body must start
+          # at column 0 to reach the interpreter unindented, and column 0 ENDS
+          # the YAML block scalar — which is exactly how the first version of
+          # this workflow failed to parse. Keep embedded scripts to one-liners.
           if ! grep -q 'platform="iOS"' export_presets.cfg 2>/dev/null; then
-            # The bundle identifier is the one iOS field with no Godot
-            # `$genname` substitution, so it must be a literal. Prefer the
-            # launch manifest (which travels in the tar); fall back to a
-            # sanitised project id so a build never dies on a missing field.
-            BUNDLE_ID=$(python3 - <<'PY'
-import json, pathlib, re, os
-p = pathlib.Path(".exekite/launch_manifest.json")
-bid = ""
-if p.is_file():
-    try:
-        bid = (json.loads(p.read_text()).get("info") or {}).get("bundle_identifier") or ""
-    except Exception:
-        bid = ""
-if not bid:
-    slug = re.sub(r"[^a-z0-9]", "", (os.environ.get("EXEKITE_PROJECT_ID") or "game").lower()) or "game"
-    bid = f"com.exekite.{slug}"
-print(bid)
-PY
-)
+            BUNDLE_ID=$(python3 -c 'import json,os,pathlib,re; p=pathlib.Path(".exekite/launch_manifest.json"); b=""; d=json.loads(p.read_text()) if p.is_file() else {}; b=(d.get("info") or {}).get("bundle_identifier") or ""; s=re.sub(r"[^a-z0-9]","",(os.environ.get("EXEKITE_PROJECT_ID") or "game").lower()) or "game"; print(b or ("com.exekite."+s))')
             IDX=$(grep -c '^\[preset\.' export_presets.cfg 2>/dev/null || echo 0)
-            cat >> export_presets.cfg <<EOF
-
-[preset.${IDX}]
-
-name="iOS"
-platform="iOS"
-runnable=true
-advanced_options=false
-dedicated_server=false
-custom_features=""
-export_filter="all_resources"
-include_filter=""
-exclude_filter=""
-export_path="build/ios/game.ipa"
-encryption_include_filters=""
-encryption_exclude_filters=""
-seed=0
-encrypt_pck=false
-encrypt_directory=false
-script_export_mode=2
-
-[preset.${IDX}.options]
-
-application/bundle_identifier="${BUNDLE_ID}"
-application/signature=""
-application/short_version="1.0"
-application/version="1.0"
-application/min_ios_version="12.0"
-application/targeted_device_family=2
-application/export_project_only=true
-application/delete_old_export_files_unconditionally=true
-application/icon_interpolation=4
-texture_format/etc2_astc=true
-texture_format/s3tc_bptc=false
-EOF
+            printf '\n[preset.%s]\n\n' "$IDX" >> export_presets.cfg
+            printf 'name="iOS"\nplatform="iOS"\nrunnable=true\nadvanced_options=false\ndedicated_server=false\ncustom_features=""\n' >> export_presets.cfg
+            printf 'export_filter="all_resources"\ninclude_filter=""\nexclude_filter=""\nexport_path="build/ios/game.ipa"\n' >> export_presets.cfg
+            printf 'encryption_include_filters=""\nencryption_exclude_filters=""\nseed=0\nencrypt_pck=false\nencrypt_directory=false\nscript_export_mode=2\n' >> export_presets.cfg
+            printf '\n[preset.%s.options]\n\n' "$IDX" >> export_presets.cfg
+            printf 'application/bundle_identifier="%s"\n' "$BUNDLE_ID" >> export_presets.cfg
+            printf 'application/signature=""\napplication/short_version="1.0"\napplication/version="1.0"\napplication/min_ios_version="12.0"\n' >> export_presets.cfg
+            printf 'application/targeted_device_family=2\napplication/export_project_only=true\napplication/delete_old_export_files_unconditionally=true\napplication/icon_interpolation=4\n' >> export_presets.cfg
+            printf 'texture_format/etc2_astc=true\ntexture_format/s3tc_bptc=false\n' >> export_presets.cfg
           fi
 
       - name: Godot import + iOS export

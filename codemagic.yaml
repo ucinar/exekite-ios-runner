@@ -66,44 +66,51 @@ workflows:
           test -f "$CM_BUILD_DIR/src/project.godot" || {
             echo "source_invalid: no project.godot" >&2; exit 1; }
 
-      - name: Install pinned Godot + iOS templates
+      # Split into one command per step ON PURPOSE. A combined step failed
+      # with a bare "exited with status code 137" and Codemagic exposes no
+      # stdout through the API (logUrl is null), so the STEP NAME is the only
+      # diagnostic available — granularity is the log.
+      - name: Probe machine
         script: |
-          set -euo pipefail
-          BIN="$HOME/godot-bin/Godot_v${GODOT_VERSION}-stable"
+          set -x
+          sw_vers; uname -m; df -h /; sysctl -n hw.memsize; xcodebuild -version
+      - name: Download Godot
+        script: |
+          set -euxo pipefail
+          mkdir -p "$HOME/godot-bin"
+          curl -fL --retry 5 --retry-all-errors -o /tmp/godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+          ls -la /tmp/godot.zip
+      - name: Unpack Godot
+        script: |
+          set -euxo pipefail
+          unzip -q -o /tmp/godot.zip -d /tmp/godot
+          find /tmp/godot -maxdepth 4 | head -20
+      - name: Install Godot binary
+        script: |
+          set -euxo pipefail
+          BIN="$HOME/godot-bin/godot"
+          SRC=$(find /tmp/godot -type f -perm -u+x \( -name 'Godot*' -o -name 'godot*' \) | head -1)
+          test -n "$SRC"
+          cp "$SRC" "$BIN"
+          chmod +x "$BIN"
+          xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
+          ls -la "$BIN"
+      - name: Godot version check
+        script: |
+          set -euxo pipefail
+          "$HOME/godot-bin/godot" --headless --version
+      - name: Download iOS export templates
+        script: |
+          set -euxo pipefail
           TPL="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
-          if [ ! -x "$BIN" ]; then
-            mkdir -p "$HOME/godot-bin"
-            curl -fL --retry 5 --retry-all-errors -o /tmp/godot.zip \
-              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
-            unzip -q /tmp/godot.zip -d /tmp/godot
-            # The zip layout has changed across releases — find the binary
-            # rather than assuming Godot.app/Contents/MacOS/Godot.
-            SRC=$(find /tmp/godot -type f -perm -u+x -name 'Godot*' | head -1)
-            [ -n "$SRC" ] || { echo "godot binary not found in the zip:" >&2; find /tmp/godot -maxdepth 3 >&2; exit 1; }
-            cp "$SRC" "$BIN"
-            chmod +x "$BIN"
-            # macOS QUARANTINE. A binary downloaded with curl carries
-            # com.apple.quarantine, and Gatekeeper SIGKILLs it on exec — which
-            # surfaces as a bare "exited with status code 137" with no other
-            # diagnostic. This line is the whole reason the first runs died.
-            xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
-            rm -rf /tmp/godot /tmp/godot.zip
-          fi
-          # Only the iOS templates — the full .tpz is ~1.25 GB and the rest of
-          # it is dead weight in the cache.
-          if [ ! -d "$TPL" ]; then
-            mkdir -p "$TPL"
-            curl -fL --retry 5 --retry-all-errors -o /tmp/templates.tpz \
-              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
-            # SELECTIVE extract. The .tpz is ~1.25 GB and unpacks to several
-            # more; extracting all of it was killed with SIGKILL (exit 137) on
-            # a real runner. `-j` flattens and takes ONLY the iOS members.
-            unzip -j -q /tmp/templates.tpz 'templates/ios*' -d "$TPL"
-            rm -f /tmp/templates.tpz
-            ls -la "$TPL" | head
-          fi
-          df -h / | tail -1
-          "$BIN" --version
+          mkdir -p "$TPL"
+          curl -fL --retry 5 --retry-all-errors -o /tmp/templates.tpz \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          ls -la /tmp/templates.tpz
+          unzip -j -o -q /tmp/templates.tpz 'templates/ios*' -d "$TPL"
+          rm -f /tmp/templates.tpz
+          ls -la "$TPL"
 
       - name: Ensure the iOS export preset
         script: |
@@ -135,7 +142,7 @@ workflows:
       - name: Godot import + iOS export
         script: |
           set -euo pipefail
-          BIN="$HOME/godot-bin/Godot_v${GODOT_VERSION}-stable"
+          BIN="$HOME/godot-bin/godot"
           cd "$CM_BUILD_DIR/src"
           # Two passes: the first often exits non-zero while the import cache
           # is cold, which is not a failure.

@@ -86,20 +86,30 @@ workflows:
           set -euxo pipefail
           unzip -q -o /tmp/godot.zip -d /tmp/godot
           find /tmp/godot -maxdepth 4 | head -20
-      - name: Install Godot binary
+      - name: Install Godot (keep the .app bundle intact)
         script: |
           set -euxo pipefail
-          BIN="$HOME/godot-bin/godot"
-          SRC=$(find /tmp/godot -type f -perm -u+x \( -name 'Godot*' -o -name 'godot*' \) | head -1)
-          test -n "$SRC"
-          cp "$SRC" "$BIN"
-          chmod +x "$BIN"
-          xattr -dr com.apple.quarantine "$BIN" 2>/dev/null || true
-          ls -la "$BIN"
+          # DO NOT copy the executable out of Godot.app. Its code signature
+          # covers the BUNDLE, so an executable lifted out of it has an invalid
+          # signature — and on Apple Silicon an invalid signature is SIGKILL on
+          # exec, which surfaces only as "exited with status code 137". That is
+          # exactly how the first four builds died.
+          rm -rf "$HOME/godot-bin"; mkdir -p "$HOME/godot-bin"
+          APP=$(find /tmp/godot -maxdepth 2 -name 'Godot*.app' -type d | head -1)
+          test -n "$APP"
+          cp -R "$APP" "$HOME/godot-bin/Godot.app"
+          xattr -dr com.apple.quarantine "$HOME/godot-bin/Godot.app" 2>/dev/null || true
+          # Re-sign ad-hoc in case the copy disturbed anything; harmless if the
+          # original signature is already valid.
+          codesign --force --deep --sign - "$HOME/godot-bin/Godot.app" 2>/dev/null || true
+          codesign -dv "$HOME/godot-bin/Godot.app" 2>&1 | head -3 || true
+          ls -la "$HOME/godot-bin/Godot.app/Contents/MacOS/"
+
       - name: Godot version check
         script: |
           set -euxo pipefail
-          "$HOME/godot-bin/godot" --headless --version
+          "$HOME/godot-bin/Godot.app/Contents/MacOS/Godot" --headless --version
+
       - name: Download iOS export templates
         script: |
           set -euxo pipefail
@@ -142,7 +152,7 @@ workflows:
       - name: Godot import + iOS export
         script: |
           set -euo pipefail
-          BIN="$HOME/godot-bin/godot"
+          BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
           cd "$CM_BUILD_DIR/src"
           # Two passes: the first often exits non-zero while the import cache
           # is cold, which is not a failure.

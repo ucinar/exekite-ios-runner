@@ -150,21 +150,33 @@ workflows:
           fi
 
       - name: Godot import + iOS export
+        # Codemagic exposes no stdout through the API (logUrl is null), so the
+        # step tees everything into a file that is published as an artifact.
+        # `ignore_failure` keeps the pipeline going to the upload step so the
+        # log survives a failure — which is the only case anyone needs it.
+        ignore_failure: true
         script: |
-          set -euo pipefail
+          set -uxo pipefail
           BIN="$HOME/godot-bin/Godot.app/Contents/MacOS/Godot"
-          cd "$CM_BUILD_DIR/src"
-          # Two passes: the first often exits non-zero while the import cache
-          # is cold, which is not a failure.
-          "$BIN" --headless --path . --import || true
-          "$BIN" --headless --path . --import
           mkdir -p "$CM_BUILD_DIR/build/ios"
-          "$BIN" --headless --path . --export-release "$GODOT_PRESET" \
-            "$CM_BUILD_DIR/build/ios/game.ipa"
-          # Godot's iOS exporter derives its output names from the path and
-          # IGNORES the .ipa extension, writing an Xcode project instead. Never
-          # assume the filename — list it and glob.
-          ls -la "$CM_BUILD_DIR/build/ios"
+          LOG="$CM_BUILD_DIR/build/ios/export.log"
+          cd "$CM_BUILD_DIR/src"
+          {
+            echo "== templates dir =="
+            ls -la "$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable" || true
+            echo "== export_presets.cfg =="
+            cat export_presets.cfg
+            echo "== import pass 1 =="
+            "$BIN" --headless --path . --import 2>&1 | tail -40
+            echo "== import pass 2 =="
+            "$BIN" --headless --path . --import 2>&1 | tail -40
+            echo "== export =="
+            "$BIN" --headless --path . --export-release "$GODOT_PRESET" "$CM_BUILD_DIR/build/ios/game.ipa" 2>&1 | tail -80
+            echo "== export exit: $? =="
+            echo "== output dir =="
+            ls -laR "$CM_BUILD_DIR/build/ios" | head -40
+          } 2>&1 | tee "$LOG"
+          echo "log written"
 
       - name: Archive + export IPA
         script: |
@@ -199,6 +211,7 @@ workflows:
             "$EXEKITE_ARTIFACT_PUT_URL"
 
     artifacts:
+      - build/ios/export.log
       - build/ios/game.ipa
       - build/ios/*.xcarchive
 

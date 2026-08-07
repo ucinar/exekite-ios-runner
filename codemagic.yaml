@@ -150,6 +150,14 @@ workflows:
             printf 'encryption_include_filters=""\nencryption_exclude_filters=""\nseed=0\nencrypt_pck=false\nencrypt_directory=false\nscript_export_mode=2\n' >> export_presets.cfg
             printf '\n[preset.%s.options]\n\n' "$IDX" >> export_presets.cfg
             printf 'application/bundle_identifier="%s"\n' "$BUNDLE_ID" >> export_presets.cfg
+            # Godot REFUSES to export iOS without a team id — "Cannot export
+            # project with preset iOS due to configuration errors: App Store
+            # Team ID not specified." It is only consumed by signing, and this
+            # lane builds UNSIGNED, so a placeholder satisfies the check and
+            # produces a valid Xcode project. A real distribution build
+            # substitutes the user's own team id from their Apple account, which
+            # is the per-user onboarding phase this lane deliberately defers.
+            printf 'application/app_store_team_id="%s"\n' "${EXEKITE_IOS_TEAM_ID:-0000000000}" >> export_presets.cfg
             printf 'application/signature=""\napplication/short_version="1.0"\napplication/version="1.0"\napplication/min_ios_version="12.0"\n' >> export_presets.cfg
             printf 'application/targeted_device_family=2\napplication/export_project_only=true\napplication/delete_old_export_files_unconditionally=true\napplication/icon_interpolation=4\n' >> export_presets.cfg
             printf 'texture_format/etc2_astc=true\ntexture_format/s3tc_bptc=false\n' >> export_presets.cfg

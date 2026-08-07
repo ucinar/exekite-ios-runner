@@ -1,0 +1,233 @@
+# Exekite iOS export — the macOS leg of the tier-3 build lane.
+#
+# THIS FILE IS THE SOURCE OF TRUTH, but it does not run from this repo. Codemagic
+# apps are bound to a git repository, and the thing being built is an arbitrary
+# user's generated game, not this monorepo. So the shape is:
+#
+#   1. a small RUNNER REPO contains only this file (+ nothing else that matters)
+#   2. it is connected to Codemagic ONCE as a single app
+#   3. every per-project build is the same POST /builds against that appId and
+#      this workflow key, with different environment variables
+#   4. script one pulls the real project from a presigned R2 URL
+#
+# That is the same source-handoff contract the Android leg already uses
+# (`apps/export-builder/container/run-job.sh`), which is why this is a second
+# EXECUTOR and not a second protocol.
+#
+# Copy this file to the runner repo whenever it changes here. `pnpm test` in
+# apps/export-builder asserts the two halves of the callback contract below stay
+# byte-compatible with the Worker's signer.
+#
+# WHY iOS CANNOT USE THE CONTAINER: Godot's iOS exporter is macOS-gated, and
+# Apple's licence forbids building iOS on non-Apple hardware. Renting macOS is
+# not a shortcut, it is the only lawful path.
+
+workflows:
+  ios-godot:                      # ← this KEY is the API's workflowId, not `name`
+    name: Exekite — Godot iOS build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        # Holds EXPORT_CALLBACK_SECRET (and, once per-user signing lands, the
+        # signing material). Deliberately NOT passed per-build: anyone with
+        # Codemagic team access can read a build's injected environment, and
+        # this secret is long-lived, unlike the presigned URLs.
+        - exekite_ios
+      vars:
+        GODOT_VERSION: "4.6.1"
+        GODOT_PRESET: "iOS"
+      xcode: latest
+    cache:
+      cache_paths:
+        - $HOME/godot-bin
+        - $HOME/Library/Application Support/Godot/export_templates
+    # API-triggered only. Without this a push to the runner repo would burn
+    # macOS minutes building nothing.
+    triggering: {}
+
+    scripts:
+      - name: Guard — required inputs
+        script: |
+          set -euo pipefail
+          for v in EXEKITE_JOB_ID EXEKITE_SOURCE_URL EXEKITE_ARTIFACT_PUT_URL \
+                   EXEKITE_ARTIFACT_R2_KEY EXEKITE_CALLBACK_URL EXPORT_CALLBACK_SECRET; do
+            eval "val=\${$v:-}"
+            [ -n "$val" ] || { echo "missing required env: $v" >&2; exit 1; }
+          done
+
+      - name: Fetch the project
+        script: |
+          set -euo pipefail
+          mkdir -p "$CM_BUILD_DIR/src"
+          # No -v / no set -x: the URL is a bearer capability.
+          curl -fsSL --retry 5 --retry-all-errors "$EXEKITE_SOURCE_URL" -o /tmp/source.tar.gz
+          tar -xzf /tmp/source.tar.gz -C "$CM_BUILD_DIR/src"
+          test -f "$CM_BUILD_DIR/src/project.godot" || {
+            echo "source_invalid: no project.godot" >&2; exit 1; }
+
+      - name: Install pinned Godot + iOS templates
+        script: |
+          set -euo pipefail
+          BIN="$HOME/godot-bin/Godot_v${GODOT_VERSION}-stable"
+          TPL="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.stable"
+          if [ ! -x "$BIN" ]; then
+            mkdir -p "$HOME/godot-bin"
+            curl -fL --retry 5 --retry-all-errors -o /tmp/godot.zip \
+              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_macos.universal.zip"
+            unzip -q /tmp/godot.zip -d /tmp/godot
+            cp -R /tmp/godot/Godot.app/Contents/MacOS/Godot "$BIN"
+            chmod +x "$BIN"
+          fi
+          # Only the iOS templates — the full .tpz is ~1.25 GB and the rest of
+          # it is dead weight in the cache.
+          if [ ! -d "$TPL" ]; then
+            mkdir -p "$TPL"
+            curl -fL --retry 5 --retry-all-errors -o /tmp/templates.tpz \
+              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+            unzip -q /tmp/templates.tpz -d /tmp/tpl
+            cp /tmp/tpl/templates/ios* "$TPL"/ 2>/dev/null || cp -R /tmp/tpl/templates/. "$TPL"/
+          fi
+          "$BIN" --version
+
+      - name: Ensure the iOS export preset
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/src"
+          # `launch_presets.py` deliberately refuses tier-3 platforms ("no
+          # in-sandbox preset"), exactly as it does for Android — so the preset
+          # is written HERE, by the executor that owns the platform. Appended
+          # only when absent, mirroring run-job.sh's Android block.
+          if ! grep -q 'platform="iOS"' export_presets.cfg 2>/dev/null; then
+            # The bundle identifier is the one iOS field with no Godot
+            # `$genname` substitution, so it must be a literal. Prefer the
+            # launch manifest (which travels in the tar); fall back to a
+            # sanitised project id so a build never dies on a missing field.
+            BUNDLE_ID=$(python3 - <<'PY'
+import json, pathlib, re, os
+p = pathlib.Path(".exekite/launch_manifest.json")
+bid = ""
+if p.is_file():
+    try:
+        bid = (json.loads(p.read_text()).get("info") or {}).get("bundle_identifier") or ""
+    except Exception:
+        bid = ""
+if not bid:
+    slug = re.sub(r"[^a-z0-9]", "", (os.environ.get("EXEKITE_PROJECT_ID") or "game").lower()) or "game"
+    bid = f"com.exekite.{slug}"
+print(bid)
+PY
+)
+            IDX=$(grep -c '^\[preset\.' export_presets.cfg 2>/dev/null || echo 0)
+            cat >> export_presets.cfg <<EOF
+
+[preset.${IDX}]
+
+name="iOS"
+platform="iOS"
+runnable=true
+advanced_options=false
+dedicated_server=false
+custom_features=""
+export_filter="all_resources"
+include_filter=""
+exclude_filter=""
+export_path="build/ios/game.ipa"
+encryption_include_filters=""
+encryption_exclude_filters=""
+seed=0
+encrypt_pck=false
+encrypt_directory=false
+script_export_mode=2
+
+[preset.${IDX}.options]
+
+application/bundle_identifier="${BUNDLE_ID}"
+application/signature=""
+application/short_version="1.0"
+application/version="1.0"
+application/min_ios_version="12.0"
+application/targeted_device_family=2
+application/export_project_only=true
+application/delete_old_export_files_unconditionally=true
+application/icon_interpolation=4
+texture_format/etc2_astc=true
+texture_format/s3tc_bptc=false
+EOF
+          fi
+
+      - name: Godot import + iOS export
+        script: |
+          set -euo pipefail
+          BIN="$HOME/godot-bin/Godot_v${GODOT_VERSION}-stable"
+          cd "$CM_BUILD_DIR/src"
+          # Two passes: the first often exits non-zero while the import cache
+          # is cold, which is not a failure.
+          "$BIN" --headless --path . --import || true
+          "$BIN" --headless --path . --import
+          mkdir -p "$CM_BUILD_DIR/build/ios"
+          "$BIN" --headless --path . --export-release "$GODOT_PRESET" \
+            "$CM_BUILD_DIR/build/ios/game.ipa"
+          # Godot's iOS exporter derives its output names from the path and
+          # IGNORES the .ipa extension, writing an Xcode project instead. Never
+          # assume the filename — list it and glob.
+          ls -la "$CM_BUILD_DIR/build/ios"
+
+      - name: Archive + export IPA
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/build/ios"
+          PROJ=$(ls -d ./*.xcodeproj 2>/dev/null | head -1)
+          [ -n "$PROJ" ] || { echo "no xcodeproj produced by Godot export" >&2; exit 1; }
+          SCHEME=$(xcodebuild -project "$PROJ" -list -json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["schemes"][0])')
+          # UNSIGNED by default. Signing needs the user's own Apple Developer
+          # account (App Review 4.2.6 requires it), and that custody flow is a
+          # separate phase — see docs/future/ios-export-lane.md. An unsigned
+          # .ipa proves the whole Godot -> xcodeproj -> archive chain and is
+          # installable via re-signing tools; it is NOT App Store ready, and
+          # the UI says so rather than implying otherwise.
+          xcodebuild -project "$PROJ" -scheme "$SCHEME" -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/game.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          # `xcodebuild -exportArchive` cannot export an unsigned archive, so
+          # hand-pack the Payload/ layout an .ipa actually is.
+          rm -rf Payload && mkdir -p Payload
+          cp -R game.xcarchive/Products/Applications/*.app Payload/
+          zip -qry "$CM_BUILD_DIR/build/ios/game.ipa" Payload
+          test -s "$CM_BUILD_DIR/build/ios/game.ipa"
+
+      - name: Upload the artifact
+        script: |
+          set -euo pipefail
+          curl -fsS -X PUT --data-binary @"$CM_BUILD_DIR/build/ios/game.ipa" \
+            -H 'content-type: application/octet-stream' \
+            "$EXEKITE_ARTIFACT_PUT_URL"
+
+    artifacts:
+      - build/ios/game.ipa
+      - build/ios/*.xcarchive
+
+    publishing:
+      scripts:
+        - name: Signed callback to the router
+          script: |
+            set -euo pipefail
+            # Runs on success AND failure, which is the point: Codemagic has no
+            # generic completion webhook, so the build reports its own outcome.
+            # The job's timeout alarm still backstops a runner that dies before
+            # reaching this step.
+            if [ "${CM_BUILD_STEP_STATUS:-failure}" = "success" ]; then
+              BODY=$(python3 -c 'import json,os; print(json.dumps({"status":"built","artifact_r2_key":os.environ["EXEKITE_ARTIFACT_R2_KEY"]},separators=(",",":")))')
+            else
+              BODY=$(python3 -c 'import json; print(json.dumps({"status":"failed","error":"ios build failed on codemagic"},separators=(",",":")))')
+            fi
+            # Lowercase hex HMAC-SHA256 over the RAW body bytes, header
+            # X-Export-Signature — byte-identical to run-job.sh and to the
+            # Worker's `signCallback`.
+            SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$EXPORT_CALLBACK_SECRET" | awk '{print $NF}')
+            curl -fsS -X POST "$EXEKITE_CALLBACK_URL" \
+              -H "X-Export-Signature: $SIG" \
+              -H 'content-type: application/json' \
+              --data-binary "$BODY"

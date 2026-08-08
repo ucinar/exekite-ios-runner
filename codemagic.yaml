@@ -135,6 +135,24 @@ workflows:
           # at column 0 to reach the interpreter unindented, and column 0 ENDS
           # the YAML block scalar — which is exactly how the first version of
           # this workflow failed to parse. Keep embedded scripts to one-liners.
+          # Godot's iOS exporter REFUSES to export without an App Store icon,
+          # and reports it as a configuration error with an EMPTY message — so
+          # the icon must be present and importable before the export runs.
+          #
+          # `marketing/icon.png` is what every real project carries (a launch
+          # build is refused without a ready 1024x1024 icon), but `marketing/`
+          # is `.gdignore`d and therefore invisible to Godot's importer — so it
+          # is COPIED to an importable path rather than referenced in place.
+          # A project without one (the smoke fixture, or any pre-launch build)
+          # falls back to the Exekite mark shipped in this runner repo, so the
+          # lane never dies on a missing icon.
+          if [ -f marketing/icon.png ]; then
+            cp marketing/icon.png ios_icon.png
+          else
+            cp "$CM_BUILD_DIR/fallback-icon.png" ios_icon.png
+          fi
+          ls -la ios_icon.png
+
           if ! grep -q 'platform="iOS"' export_presets.cfg 2>/dev/null; then
             BUNDLE_ID=$(python3 -c 'import json,os,pathlib,re; p=pathlib.Path(".exekite/launch_manifest.json"); b=""; d=json.loads(p.read_text()) if p.is_file() else {}; b=(d.get("info") or {}).get("bundle_identifier") or ""; s=re.sub(r"[^a-z0-9]","",(os.environ.get("EXEKITE_PROJECT_ID") or "game").lower()) or "game"; print(b or ("com.exekite."+s))')
             # Count ONLY section headers `[preset.N]`. The naive
@@ -160,6 +178,7 @@ workflows:
             printf 'application/app_store_team_id="%s"\n' "${EXEKITE_IOS_TEAM_ID:-0000000000}" >> export_presets.cfg
             printf 'application/signature=""\napplication/short_version="1.0"\napplication/version="1.0"\napplication/min_ios_version="12.0"\n' >> export_presets.cfg
             printf 'application/targeted_device_family=2\napplication/export_project_only=true\napplication/delete_old_export_files_unconditionally=true\napplication/icon_interpolation=4\n' >> export_presets.cfg
+            printf 'icons/icon_1024x1024="res://ios_icon.png"\n' >> export_presets.cfg
             printf 'texture_format/etc2_astc=true\ntexture_format/s3tc_bptc=false\n' >> export_presets.cfg
           fi
 

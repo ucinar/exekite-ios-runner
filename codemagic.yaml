@@ -135,10 +135,25 @@ workflows:
           # at column 0 to reach the interpreter unindented, and column 0 ENDS
           # the YAML block scalar — which is exactly how the first version of
           # this workflow failed to parse. Keep embedded scripts to one-liners.
-          # Godot's iOS exporter REFUSES to export without an App Store icon,
-          # and reports it as a configuration error with an EMPTY message — so
-          # the icon must be present and importable before the export runs.
           #
+          # THE EMPTY-MESSAGE BLOCKER, and why this line is here.
+          # Godot's iOS `has_valid_project_configuration` is the ONE branch that
+          # sets `valid = false` without appending to the error string, so the
+          # CLI prints "due to configuration errors:" followed by NOTHING. The
+          # cause is project-wide ETC2/ASTC texture import being off. It cost
+          # thirteen builds and eight ruled-out hypotheses to find, because the
+          # engine names neither the setting nor the platform.
+          #
+          # `launch_presets._ensure_etc2_astc` now injects this host-side too,
+          # so in the normal path the source tarball already carries it. It is
+          # ALSO done here, deliberately: this executor builds whatever
+          # project.godot it is handed — a hand-triggered build, an older
+          # tarball or a smoke fixture must not hit a silent refusal. That is
+          # exactly why the Android runner injects the same key itself
+          # (`container/run-job.sh`) despite the host doing it as well.
+          python3 -c 'import pathlib,re; k="textures/vram_compression/import_etc2_astc"; p=pathlib.Path("project.godot"); t=p.read_text(encoding="utf-8"); has=bool(re.search(r"^"+re.escape(k)+r"\s*=",t,re.M)); sec=bool(re.search(r"^\[rendering\]$",t,re.M)); n=t if has else (re.sub(r"^\[rendering\]$","[rendering]\n"+k+"=true",t,count=1,flags=re.M) if sec else t.rstrip("\n")+"\n\n[rendering]\n\n"+k+"=true\n"); p.write_text(n,encoding="utf-8"); print("etc2_astc:","present" if has else "injected")'
+
+          # Godot also requires an App Store icon for a real iOS app.
           # `marketing/icon.png` is what every real project carries (a launch
           # build is refused without a ready 1024x1024 icon), but `marketing/`
           # is `.gdignore`d and therefore invisible to Godot's importer — so it

@@ -203,8 +203,10 @@ workflows:
             "$BIN" --headless --path . --import 2>&1 | tail -40
             echo "== import pass 2 =="
             "$BIN" --headless --path . --import 2>&1 | tail -40
-            echo "== export =="
-            "$BIN" --headless --path . --export-release "$GODOT_PRESET" "$CM_BUILD_DIR/build/ios/game.ipa" 2>&1 | tail -80
+            echo "== templates godot can see =="
+            "$BIN" --headless --path . --export-release "$GODOT_PRESET" 2>&1 | tail -20 || true
+            echo "== export (verbose) =="
+            "$BIN" --headless --verbose --path . --export-release "$GODOT_PRESET" "$CM_BUILD_DIR/build/ios/game.ipa" 2>&1 | grep -viE "^\[|scanning|loading resource|WARNING: [0-9]" | tail -70
             echo "== export exit: $? =="
             echo "== output dir =="
             ls -laR "$CM_BUILD_DIR/build/ios" | head -40

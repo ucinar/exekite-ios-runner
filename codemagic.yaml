@@ -256,9 +256,17 @@ workflows:
       - name: Upload the artifact
         script: |
           set -euo pipefail
-          curl -fsS -X PUT --data-binary @"$CM_BUILD_DIR/build/ios/game.ipa" \
+          IPA="$CM_BUILD_DIR/build/ios/game.ipa"
+          # An .ipa is a zip of a whole Godot runtime; anything this small is a
+          # packaging accident, not a game. Mirrors the Android leg's floor.
+          BYTES=$(stat -f%z "$IPA")
+          [ "$BYTES" -ge 5000000 ] || { echo "ipa suspiciously small: $BYTES" >&2; exit 1; }
+          curl -fsS -X PUT --data-binary @"$IPA" \
             -H 'content-type: application/octet-stream' \
             "$EXEKITE_ARTIFACT_PUT_URL"
+          # THE SUCCESS RECEIPT. Written only after the PUT returns 2xx, and it
+          # is the ONLY thing the callback below trusts — see its comment.
+          echo "$BYTES" > "$CM_BUILD_DIR/build/ios/.uploaded"
 
     artifacts:
       - build/ios/export.log
@@ -274,7 +282,23 @@ workflows:
             # generic completion webhook, so the build reports its own outcome.
             # The job's timeout alarm still backstops a runner that dies before
             # reaching this step.
-            if [ "${CM_BUILD_STEP_STATUS:-failure}" = "success" ]; then
+            #
+            # THE ARTIFACT IS THE TRUTH — never the vendor's status variable.
+            # This branched on `CM_BUILD_STEP_STATUS` and reported `failed` for
+            # a build that had produced, verified AND uploaded a 41 MB .ipa
+            # (measured 2026-08-08): every step read `success` in the API while
+            # the callback said the opposite, so the Ship page showed a failure
+            # for a game that had genuinely shipped. The variable's semantics in
+            # a publishing script are undocumented enough that `:-failure`
+            # silently converted "unset" into "the build failed".
+            #
+            # `.uploaded` is written by the upload step ONLY after the PUT
+            # returns 2xx, so its presence means exactly "the bytes the router
+            # is about to be told exist, exist". This is the same rule
+            # `container/run-job.sh` states for Android: "Never trust the exit
+            # code alone — the artifact is the truth."
+            echo "diag: CM_BUILD_STEP_STATUS=${CM_BUILD_STEP_STATUS:-<unset>}"
+            if [ -f "$CM_BUILD_DIR/build/ios/.uploaded" ]; then
               BODY=$(python3 -c 'import json,os; print(json.dumps({"status":"built","artifact_r2_key":os.environ["EXEKITE_ARTIFACT_R2_KEY"]},separators=(",",":")))')
             else
               BODY=$(python3 -c 'import json; print(json.dumps({"status":"failed","error":"ios build failed on codemagic"},separators=(",",":")))')

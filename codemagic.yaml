@@ -180,12 +180,17 @@ workflows:
             # integers; anything else falls back to 1.0 rather than producing an
             # .ipa Apple rejects at parse time.
             SHORT_VERSION=$(python3 -c 'import json,pathlib,re; p=pathlib.Path(".exekite/launch_manifest.json"); d=json.loads(p.read_text()) if p.is_file() else {}; v=((d.get("info") or {}).get("version") or "").strip(); print(v if re.fullmatch(r"\d+(\.\d+){0,2}", v) else "1.0")')
-            # CFBundleName came out as "game" — the export path's basename —
-            # while CFBundleDisplayName (the home-screen name) was correct.
-            # Cosmetic, but it is the name iOS Settings and some dialogs show.
-            # Apple caps it at 15 chars; quotes are stripped because this value
-            # lands inside a quoted .cfg field.
-            APP_NAME=$(python3 -c 'import json,pathlib,re; p=pathlib.Path(".exekite/launch_manifest.json"); d=json.loads(p.read_text()) if p.is_file() else {}; t=((d.get("info") or {}).get("title") or "").strip(); t=re.sub(r"[\"\\\\]","",t)[:15].strip(); print(t or "Game")')
+            # NOT setting a bundle name here. `application/name` was tried and
+            # MEASURED inert on 2026-08-08: the preset carried it and the .ipa
+            # still came out with CFBundleName="game", because Godot's iOS
+            # exporter derives that from the export path's basename
+            # (build/ios/game.ipa), not from a preset key. CFBundleDisplayName
+            # — the name on the home screen, and the one that matters — already
+            # follows the title via project.godot's config/name (verified the
+            # same day: "Torchbound Deluxe"). Renaming the export path would
+            # move CFBundleName, but it also changes the artifact filename the
+            # upload step and the router's R2 key both depend on, which is not
+            # worth trading for a string in iOS Settings.
             # Count ONLY section headers `[preset.N]`. The naive
             # `grep -c '^\[preset\.'` also matches `[preset.N.options]`, which
             # doubled the count and wrote `[preset.2]` into a file whose only
@@ -207,7 +212,6 @@ workflows:
             # substitutes the user's own team id from their Apple account, which
             # is the per-user onboarding phase this lane deliberately defers.
             printf 'application/app_store_team_id="%s"\n' "${EXEKITE_IOS_TEAM_ID:-0000000000}" >> export_presets.cfg
-            printf 'application/name="%s"\n' "$APP_NAME" >> export_presets.cfg
             printf 'application/signature=""\napplication/short_version="%s"\napplication/version="%s"\napplication/min_ios_version="12.0"\n' "$SHORT_VERSION" "$SHORT_VERSION" >> export_presets.cfg
             printf 'application/targeted_device_family=2\napplication/export_project_only=true\napplication/delete_old_export_files_unconditionally=true\napplication/icon_interpolation=4\n' >> export_presets.cfg
             printf 'icons/icon_1024x1024="res://ios_icon.png"\n' >> export_presets.cfg

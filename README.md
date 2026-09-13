@@ -5,7 +5,7 @@ being built.**
 
 Codemagic apps bind to a git repository, but the thing Exekite builds is an
 arbitrary user's generated game, which lives in R2 — not in any repo. So this
-repo exists only to hold `codemagic.yaml` and be connected to Codemagic once.
+repo holds `codemagic.yaml` and `prepare-ios.py` and is connected to Codemagic once.
 Every per-project build is the same workflow triggered through the API with
 different environment variables; the first build script pulls the real project
 from a presigned R2 URL.
@@ -16,14 +16,14 @@ protocol.
 
 ## Source of truth
 
-`codemagic.yaml` is **generated from** the Exekite monorepo at
-`apps/export-builder/codemagic/codemagic.yaml`. Edit it there and re-copy —
-edits made directly in this repo will be overwritten and are not covered by the
-monorepo's tests.
+`codemagic.yaml` and `prepare-ios.py` are copied from the Exekite monorepo's
+`apps/export-builder/codemagic/` directory. Edit and test them there, then copy
+both files here. The normal deployment gate verifies both runner files against
+one remote commit before publishing the platform release.
 
 ## Setup
 
-See `docs/future/ios-export-lane.md` in the monorepo. In short:
+See `docs/export-operations.md` in the monorepo for the active export contract:
 
 1. Connect this repo to Codemagic as an app (Codemagic → Add application).
 2. Create a secure variable group named `exekite_ios` containing
